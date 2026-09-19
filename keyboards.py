@@ -31,48 +31,58 @@ def subscribe_keyboard() -> InlineKeyboardMarkup:
 def main_menu_keyboard(is_admin: bool = False) -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton(text="🎬 Videolar"), KeyboardButton(text="🏆 Natijalar")],
-        [KeyboardButton(text="ℹ️ Bot haqida")],
+        [KeyboardButton(text="ℹ️ Biz haqimizda")],
     ]
     if is_admin:
-        keyboard.append([KeyboardButton(text="🔐 ADMIN PANEL")])
+        keyboard.append([KeyboardButton(text="🔐 Admin panel")])
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
 
-def admin_menu_keyboard() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="➕ Video qo'shish"), KeyboardButton(text="📋 Videolar")],
-            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🗑 Video o'chirish")],
-            [KeyboardButton(text="🔄 Ovozlarni ko'rish")],
-            [KeyboardButton(text="⬅️ Asosiy menyu")],
-        ],
-        resize_keyboard=True,
+def admin_menu_keyboard(is_super_admin: bool = False) -> ReplyKeyboardMarkup:
+    keyboard = [
+        [KeyboardButton(text="➕ Video qo'shish"), KeyboardButton(text="📋 Videolar")],
+        [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="🔎 Foydalanuvchini qidirish")],
+        [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🏆 Natijalar")],
+        [KeyboardButton(text="✏️ Video tahrirlash"), KeyboardButton(text="🗑 Video o'chirish")],
+        [KeyboardButton(text="📅 Sana belgilash"), KeyboardButton(text="📢 Xabar yuborish")],
+        [KeyboardButton(text="📤 Excel eksport")],
+    ]
+    if is_super_admin:
+        keyboard.append([KeyboardButton(text="👤 Adminlar"), KeyboardButton(text="➕ Admin qo'shish")])
+    keyboard.append([KeyboardButton(text="⬅️ Asosiy menyu")])
+    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+
+
+def admins_list_keyboard(admin_ids: list[int]) -> InlineKeyboardMarkup:
+    buttons = [
+        [InlineKeyboardButton(text=f"🗑 {admin_id}", callback_data=f"admin_remove:{admin_id}")]
+        for admin_id in admin_ids
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def broadcast_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, yuborish", callback_data="broadcast_send"),
+                InlineKeyboardButton(text="❌ Bekor qilish", callback_data="broadcast_cancel"),
+            ]
+        ]
     )
 
 
-def video_page_keyboard(video: dict, index: int, total: int) -> InlineKeyboardMarkup:
-    """Bitta video ostidagi ovoz berish tugmasi + oldingi/keyingi navigatsiya."""
-    vote_row = [
-        InlineKeyboardButton(
-            text=f"🗳 Ovoz berish | {video['votes_count']} ta ovoz",
-            callback_data=f"vote:{video['id']}:{index}",
-        )
-    ]
+def video_page_keyboard(video: dict, voted_video_id: int | None) -> InlineKeyboardMarkup:
+    if voted_video_id == video["id"]:
+        vote_text = f"✅ Ovoz berilgan | {video['votes_count']} ta ovoz"
+    else:
+        vote_text = f"🗳 Ovoz berish | {video['votes_count']} ta ovoz"
 
-    nav_row = []
-    if index > 0:
-        nav_row.append(
-            InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"navpage:{index - 1}")
-        )
-    if index < total - 1:
-        nav_row.append(
-            InlineKeyboardButton(text="➡️ Keyingi", callback_data=f"navpage:{index + 1}")
-        )
-
-    rows = [vote_row]
-    if nav_row:
-        rows.append(nav_row)
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=vote_text, callback_data=f"vote:{video['id']}")]
+        ]
+    )
 
 
 def delete_video_list_keyboard(videos: list[dict]) -> InlineKeyboardMarkup:
@@ -99,4 +109,68 @@ def confirm_delete_keyboard(video_id: int) -> InlineKeyboardMarkup:
     )
 
 
-SKIP_DESCRIPTION_HINT = "📄 Video tavsifini yuboring yoki /skip yozing."
+def edit_video_list_keyboard(videos: list[dict]) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"✏️ {video['title']}",
+                callback_data=f"edit_pick:{video['id']}",
+            )
+        ]
+        for video in videos
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def edit_field_keyboard(video_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📝 Nomi", callback_data=f"edit_field:{video_id}:title")],
+            [InlineKeyboardButton(text="📄 Tavsifi", callback_data=f"edit_field:{video_id}:description")],
+            [InlineKeyboardButton(text="🔢 Tartib raqami", callback_data=f"edit_field:{video_id}:position")],
+            [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="edit_cancel")],
+        ]
+    )
+
+
+def users_page_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"userspage:{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text="➡️ Keyingi", callback_data=f"userspage:{page + 1}"))
+    rows = [nav_row] if nav_row else []
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def vote_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, ovoz beraman", callback_data="vote_confirm"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data="vote_cancel"),
+            ]
+        ]
+    )
+
+
+def profile_link_keyboard(username: str | None, telegram_id: int) -> InlineKeyboardMarkup:
+    if username:
+        url = f"https://t.me/{username.lstrip('@')}"
+    else:
+        url = f"tg://user?id={telegram_id}"
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔗 Profilni ochish", url=url)]]
+    )
+
+
+def search_type_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🆔 Telegram ID orqali", callback_data="search_by:id")],
+            [InlineKeyboardButton(text="👤 Username orqali", callback_data="search_by:username")],
+        ]
+    )
+
+
+SKIP_DESCRIPTION_HINT = "📄 Video tavsifini yuboring."
