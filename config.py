@@ -8,7 +8,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL")
 
-DB_PATH = "bot_database.db"
+DB_PATH = os.getenv("DB_PATH", "bot_database.db")
 USERS_PER_PAGE = 20
 PORT = int(os.getenv("PORT", "8080"))
 

@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 from datetime import datetime
 from typing import Optional
 
@@ -8,33 +10,38 @@ from config import DB_PATH
 
 logger = logging.getLogger(__name__)
 
+# Bot bilan bir joyda turadigan zaxira fayli (2026-09-19 holatidagi eski
+# ma'lumotlar: foydalanuvchilar + ular bergan ovozlar). Yangi (bo'sh) bazada
+# birinchi marta ishga tushganda shu yerdan avtomatik tiklanadi.
+BACKUP_JSON_PATH = os.path.join(os.path.dirname(__file__), "backup_data.json")
+
+# Zaxiradagi videolar uchun haqiqiy file_id noma'lum (Excel eksportida
+# saqlanmagan), shuning uchun vaqtinchalik belgi qo'yiladi. Adminlar
+# tiklangandan keyin "🎥 Video faylini yangilash" tugmasi orqali haqiqiy
+# videoni qayta yuklab, ovozlarni yo'qotmasdan file_id'ni yangilaydi.
+PLACEHOLDER_FILE_ID = "PLACEHOLDER_NEEDS_REUPLOAD"
+
 
 # ==================== DATABASE ====================
 
 async def init_db() -> None:
     """
-    Yangi baza yaratadi.
-    Eski baza bo'lsa, barcha eski ma'lumotlarni tozalaydi:
-    - users
-    - videos
-    - votes
-    - admins
-    - settings
+    Baza mavjud bo'lmasa yaratadi.
+
+    MUHIM: bu funksiya ENDI hech qachon mavjud jadvallarni o'chirmaydi
+    (avvalgi versiyada DROP TABLE bor edi va bot har safar qayta ishga
+    tushganda BARCHA foydalanuvchilar/ovozlar yo'qolardi). Endi faqat
+    jadval mavjud bo'lmasa yaratiladi — mavjud ma'lumotlarga tegilmaydi.
     """
 
     async with aiosqlite.connect(DB_PATH) as conn:
 
-        # Eski jadvallarni butunlay o'chiramiz
-        await conn.execute("DROP TABLE IF EXISTS votes")
-        await conn.execute("DROP TABLE IF EXISTS videos")
-        await conn.execute("DROP TABLE IF EXISTS users")
-        await conn.execute("DROP TABLE IF EXISTS admins")
-        await conn.execute("DROP TABLE IF EXISTS settings")
+        await conn.execute("PRAGMA foreign_keys = ON")
 
         # USERS
         await conn.execute(
             """
-            CREATE TABLE users (
+            CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE NOT NULL,
                 username TEXT,
@@ -48,7 +55,7 @@ async def init_db() -> None:
         # VIDEOS
         await conn.execute(
             """
-            CREATE TABLE videos (
+            CREATE TABLE IF NOT EXISTS videos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 file_id TEXT NOT NULL,
                 title TEXT NOT NULL,
@@ -63,7 +70,7 @@ async def init_db() -> None:
         # VOTES
         await conn.execute(
             """
-            CREATE TABLE votes (
+            CREATE TABLE IF NOT EXISTS votes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER UNIQUE NOT NULL,
                 video_id INTEGER NOT NULL,
@@ -77,7 +84,7 @@ async def init_db() -> None:
         # ADMINS
         await conn.execute(
             """
-            CREATE TABLE admins (
+            CREATE TABLE IF NOT EXISTS admins (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE NOT NULL,
                 added_by INTEGER,
@@ -89,7 +96,7 @@ async def init_db() -> None:
         # SETTINGS
         await conn.execute(
             """
-            CREATE TABLE settings (
+            CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
             )
@@ -98,7 +105,102 @@ async def init_db() -> None:
 
         await conn.commit()
 
-    logger.info("Yangi ma'lumotlar bazasi yaratildi.")
+    logger.info("Ma'lumotlar bazasi tekshirildi/tayyorlandi (mavjud ma'lumotlarga tegilmadi).")
+
+
+async def restore_from_backup_if_empty() -> None:
+    """
+    Agar baza chindan ham BO'SH bo'lsa (masalan, Railway'da yangi Volume
+    birinchi marta ulanganda) va loyiha ichida backup_data.json fayli
+    mavjud bo'lsa — 2026-09-19 holatidagi foydalanuvchilar va ovozlarni
+    avtomatik tiklaydi.
+
+    Bazada allaqachon kamida bitta foydalanuvchi bo'lsa, bu funksiya
+    HECH NARSA QILMAYDI (ikki marta import bo'lib ketmasligi uchun).
+    """
+
+    if not os.path.exists(BACKUP_JSON_PATH):
+        return
+
+    existing_users = await get_users_count()
+    if existing_users > 0:
+        return
+
+    with open(BACKUP_JSON_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    videos = data.get("videos", [])
+    users = data.get("users", [])
+
+    if not users:
+        return
+
+    logger.info(
+        f"Bo'sh baza aniqlandi — zaxiradan tiklanmoqda: "
+        f"{len(videos)} video, {len(users)} foydalanuvchi."
+    )
+
+    now_iso = datetime.now().isoformat()
+
+    async with aiosqlite.connect(DB_PATH) as conn:
+
+        # 1) Videolarni tiklaymiz (haqiqiy file_id keyinroq admin panel orqali
+        #    "🎥 Video faylini yangilash" bilan qo'yiladi)
+        title_to_video_id: dict[str, int] = {}
+        for video in videos:
+            cursor = await conn.execute(
+                """
+                INSERT INTO videos
+                (file_id, title, description, votes_count, position, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    PLACEHOLDER_FILE_ID,
+                    video["title"],
+                    None,
+                    video.get("votes_count", 0),
+                    video.get("position", 0),
+                    now_iso,
+                ),
+            )
+            title_to_video_id[video["title"]] = cursor.lastrowid
+
+        # 2) Foydalanuvchilarni va ularning ovozlarini tiklaymiz
+        restored_votes = 0
+        for user in users:
+            cursor = await conn.execute(
+                """
+                INSERT OR IGNORE INTO users
+                (telegram_id, username, first_name, last_name, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user["telegram_id"],
+                    user.get("username"),
+                    user.get("first_name"),
+                    user.get("last_name"),
+                    user.get("created_at") or now_iso,
+                ),
+            )
+            user_db_id = cursor.lastrowid
+
+            voted_title = user.get("voted_title")
+            if voted_title and voted_title in title_to_video_id:
+                try:
+                    await conn.execute(
+                        """
+                        INSERT INTO votes (user_id, video_id, created_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (user_db_id, title_to_video_id[voted_title], now_iso),
+                    )
+                    restored_votes += 1
+                except aiosqlite.IntegrityError:
+                    pass
+
+        await conn.commit()
+
+    logger.info(f"Zaxiradan tiklandi: {len(users)} foydalanuvchi, {restored_votes} ovoz.")
 
 
 # ==================== USERS ====================
@@ -465,6 +567,24 @@ async def update_video(
             WHERE id = ?
             """,
             values
+        )
+
+        await conn.commit()
+
+
+async def update_video_file(video_id: int, file_id: str) -> None:
+    """
+    Faqat video faylini (file_id) yangilaydi — sarlavha, tavsif,
+    tartib raqami va eng muhimi ovozlar (votes_count, votes jadvali)
+    o'zgarishsiz qoladi. Zaxiradan tiklangan "placeholder" videolarni
+    haqiqiy video fayli bilan almashtirish uchun ishlatiladi.
+    """
+
+    async with aiosqlite.connect(DB_PATH) as conn:
+
+        await conn.execute(
+            "UPDATE videos SET file_id = ? WHERE id = ?",
+            (file_id, video_id),
         )
 
         await conn.commit()

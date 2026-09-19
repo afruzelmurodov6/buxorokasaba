@@ -32,7 +32,13 @@ async def main():
     dp.include_router(admin.router)
     dp.include_router(users.router)
 
+    # Jadvallarni yaratadi (mavjud bo'lsa tegmaydi)
     await db.init_db()
+
+    # Baza chindan ham bo'sh bo'lsa (masalan yangi Volume birinchi marta
+    # ulanganda) — backup_data.json'dan eski foydalanuvchi/ovozlarni
+    # avtomatik tiklaydi. Bazada ma'lumot bo'lsa, hech narsa qilmaydi.
+    await db.restore_from_backup_if_empty()
 
     await start_webserver(config.PORT)
 

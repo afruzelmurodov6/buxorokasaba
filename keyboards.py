@@ -44,6 +44,7 @@ def admin_menu_keyboard(is_super_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="🔎 Foydalanuvchini qidirish")],
         [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🏆 Natijalar")],
         [KeyboardButton(text="✏️ Video tahrirlash"), KeyboardButton(text="🗑 Video o'chirish")],
+        [KeyboardButton(text="🎥 Video faylini yangilash")],
         [KeyboardButton(text="📅 Sana belgilash"), KeyboardButton(text="📢 Xabar yuborish")],
         [KeyboardButton(text="📤 Excel eksport")],
     ]
@@ -131,6 +132,19 @@ def edit_field_keyboard(video_id: int) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(text="⬅️ Bekor qilish", callback_data="edit_cancel")],
         ]
     )
+
+
+def update_file_video_list_keyboard(videos: list[dict]) -> InlineKeyboardMarkup:
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text=f"🎥 {video['title']}",
+                callback_data=f"updatefile_pick:{video['id']}",
+            )
+        ]
+        for video in videos
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
 def users_page_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:

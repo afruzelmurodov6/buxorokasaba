@@ -12,6 +12,10 @@ class EditVideoStates(StatesGroup):
     waiting_for_new_value = State()
 
 
+class UpdateVideoFileStates(StatesGroup):
+    waiting_for_video = State()
+
+
 class SearchUserStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_username = State()

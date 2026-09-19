@@ -6,7 +6,14 @@ from aiogram.types import CallbackQuery, FSInputFile, Message
 
 import database as db
 import keyboards as kb
-from states import AddAdminStates, AddVideoStates, BroadcastStates, EditVideoStates, VotingPeriodStates
+from states import (
+    AddAdminStates,
+    AddVideoStates,
+    BroadcastStates,
+    EditVideoStates,
+    UpdateVideoFileStates,
+    VotingPeriodStates,
+)
 from utils import DATE_FORMAT, is_admin, is_super_admin, parse_datetime
 
 router = Router()
@@ -272,6 +279,61 @@ async def edit_video_apply(message: Message, state: FSMContext):
         "✅ Video muvaffaqiyatli yangilandi.",
         reply_markup=kb.admin_menu_keyboard(is_super_admin(message.from_user.id)),
     )
+
+
+# ==================== VIDEO FAYLINI YANGILASH ====================
+# Bu bo'lim video faylini (file_id) almashtirish uchun — sarlavha, tavsif,
+# tartib raqami va ENG MUHIMI ovozlar (votes_count va votes jadvali)
+# o'zgarishsiz qoladi. Zaxiradan tiklangan eski videolarga haqiqiy video
+# faylini qayta yuklash uchun ishlatiladi.
+
+@router.message(F.text == "🎥 Video faylini yangilash")
+async def admin_update_file_list(message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    videos = await db.get_all_videos()
+    if not videos:
+        await message.answer("😔 Hozircha videolar mavjud emas.")
+        return
+    await message.answer(
+        "🎥 Qaysi ishtirokchining video faylini yangilamoqchisiz?",
+        reply_markup=kb.update_file_video_list_keyboard(videos),
+    )
+
+
+@router.callback_query(F.data.startswith("updatefile_pick:"))
+async def cb_update_file_pick(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    video_id = int(callback.data.split(":")[1])
+    await state.update_data(update_file_video_id=video_id)
+    await state.set_state(UpdateVideoFileStates.waiting_for_video)
+    await callback.message.answer("🎬 Yangi videoni yuboring (ovozlar saqlanib qoladi).")
+    await callback.answer()
+
+
+@router.message(UpdateVideoFileStates.waiting_for_video, F.video)
+async def admin_update_file_receive(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    video_id: int = data["update_file_video_id"]
+
+    await db.update_video_file(video_id, message.video.file_id)
+
+    await state.clear()
+    await message.answer(
+        "✅ Video fayli muvaffaqiyatli yangilandi. Ovozlar o'zgarishsiz qoldi.",
+        reply_markup=kb.admin_menu_keyboard(is_super_admin(message.from_user.id)),
+    )
+
+
+@router.message(UpdateVideoFileStates.waiting_for_video)
+async def admin_update_file_wrong_type(message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    await message.answer("⚠️ Iltimos, video fayl yuboring.")
 
 
 # ==================== OVOZ BERISH MUDDATI ====================
