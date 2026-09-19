@@ -1,6 +1,6 @@
 import os
 
-from dotenv import load_dotenv # type: ignore
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -9,6 +9,8 @@ ADMIN_ID_RAW = os.getenv("ADMIN_ID", "0")
 REQUIRED_CHANNEL = os.getenv("REQUIRED_CHANNEL")
 
 DB_PATH = "bot_database.db"
+USERS_PER_PAGE = 20
+PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN:
     raise ValueError(
@@ -19,7 +21,7 @@ if not BOT_TOKEN:
 if not REQUIRED_CHANNEL:
     raise ValueError(
         "REQUIRED_CHANNEL topilmadi! .env faylida REQUIRED_CHANNEL ni kiriting "
-        "(masalan: @mening_kanalim)."
+        "(masalan: @buxorokasabauyushma)."
     )
 
 try:
