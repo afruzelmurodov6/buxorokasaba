@@ -193,6 +193,17 @@ async def merge_legacy_backup(backup_path: str = "backup_data.json") -> None:
     )
 
 
+async def restore_from_backup_if_empty(backup_path: str = "backup_data.json") -> None:
+    """
+    Compatibility wrapper for bot.py's startup call. Safe to call every time
+    the bot starts — it's idempotent (guarded internally by the
+    'legacy_backup_merged' settings flag), so it only actually restores data
+    once, the first time it finds backup_data.json and the users haven't
+    been merged in yet.
+    """
+    await merge_legacy_backup(backup_path)
+
+
 # ==================== USERS ====================
 
 async def add_user(
