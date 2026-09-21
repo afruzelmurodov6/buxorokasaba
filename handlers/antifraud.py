@@ -2,6 +2,7 @@ from html import escape
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery, Message
+from aiogram.types import FSInputFile
 
 import database as db
 import keyboards as kb
@@ -240,3 +241,93 @@ async def final_report(message: Message):
     )
 
     await message.answer("\n".join(lines))
+
+# ==================== FRAUD TO'LIQ EKSPORT ====================
+
+@router.message(F.text == "📤 Fraud eksport (to'liq)")
+async def fraud_export_full(message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+
+    await message.answer("📤 Fayl tayyorlanmoqda, biroz kuting...")
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+
+    fast_votes = await db.get_fast_signup_to_vote()
+    ws1 = wb.active
+    ws1.title = "Tez ovoz berganlar"
+    ws1.append([
+        "Ism", "Familiya", "Username", "Telegram ID",
+        "Ovoz bergan", "Ro'yxatdan o'tish", "Ovoz berish vaqti", "Necha soniyada"
+    ])
+    for v in fast_votes:
+        ws1.append([
+            v.get("first_name") or "",
+            v.get("last_name") or "",
+            f"@{v['username']}" if v.get("username") else "",
+            v["telegram_id"],
+            v["voted_title"],
+            v["user_created_at"],
+            v["vote_created_at"],
+            v["seconds_to_vote"],
+        ])
+
+    burst_clusters = await db.get_signup_burst_clusters()
+    ws2 = wb.create_sheet("Ommaviy royxatdan otish")
+    ws2.append([
+        "Klaster #", "Ishtirokchi", "Oyna boshlanishi", "Oyna tugashi", "Jami akkaunt",
+        "Ism", "Familiya", "Username", "Telegram ID", "Ro'yxatdan o'tgan vaqt"
+    ])
+    for idx, c in enumerate(burst_clusters, start=1):
+        for m in c["members"]:
+            ws2.append([
+                idx,
+                c["video_title"],
+                c["window_start"],
+                c["window_end"],
+                c["count"],
+                m.get("first_name") or "",
+                m.get("last_name") or "",
+                f"@{m['username']}" if m.get("username") else "",
+                m["telegram_id"],
+                m["created_at"],
+            ])
+
+    dup_clusters = await db.get_duplicate_name_clusters()
+    ws3 = wb.create_sheet("Bir xil ismli akkauntlar")
+    ws3.append([
+        "Guruh", "Ism", "Familiya", "Guruhdagi soni",
+        "Username", "Telegram ID", "Ovoz bergan", "Ro'yxatdan o'tgan"
+    ])
+    for idx, c in enumerate(dup_clusters, start=1):
+        for m in c["members"]:
+            ws3.append([
+                idx,
+                c["first_name"],
+                c["last_name"],
+                c["count"],
+                f"@{m['username']}" if m.get("username") else "",
+                m["telegram_id"],
+                m.get("voted_title") or "Hali ovoz bermagan",
+                m["created_at"],
+            ])
+
+    for ws in (ws1, ws2, ws3):
+        for col_cells in ws.columns:
+            length = max(len(str(c.value)) if c.value is not None else 0 for c in col_cells)
+            ws.column_dimensions[col_cells[0].column_letter].width = min(max(length + 2, 10), 40)
+
+    file_path = "/tmp/fraud_export.xlsx"
+    wb.save(file_path)
+
+    await message.answer_document(
+        FSInputFile(file_path, filename="fraud_export.xlsx"),
+        caption=(
+            f"🛡 To'liq fraud ma'lumotlari:\n"
+            f"⚡ Tez ovoz berganlar: {len(fast_votes)}\n"
+            f"⏱ Ommaviy ro'yxatdan o'tish: {sum(c['count'] for c in burst_clusters)} ta akkaunt ({len(burst_clusters)} klaster)\n"
+            f"👥 Bir xil ismli akkauntlar: {sum(c['count'] for c in dup_clusters)} ta akkaunt ({len(dup_clusters)} guruh)"
+        ),
+    )
