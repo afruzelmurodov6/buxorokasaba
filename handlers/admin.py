@@ -1,12 +1,13 @@
 from html import escape
 
 from aiogram import F, Router
+from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
 import database as db
 import keyboards as kb
-from states import AddAdminStates, AddVideoStates, AdjustVotesStates, BroadcastStates, EditVideoStates, VotingPeriodStates
+from states import AddAdminStates, AddVideoStates, AdjustVotesStates, BroadcastStates, EditVideoStates, LockBotStates, VotingPeriodStates
 from utils import DATE_FORMAT, is_admin, is_super_admin, parse_datetime
 
 router = Router()
@@ -88,6 +89,7 @@ async def add_video_receive_position(message: Message, state: FSMContext):
 
     data = await state.get_data()
     await db.add_video(data["file_id"], data["title"], data.get("description"), position)
+    await db.log_audit(message.from_user.id, "Video qo'shildi", data["title"])
     await state.clear()
     await message.answer(
         "✅ Video muvaffaqiyatli qo'shildi.",
@@ -127,6 +129,8 @@ async def cb_restore_video(callback: CallbackQuery):
         return
     video_id = int(callback.data.split(":")[1])
     await db.restore_video(video_id)
+    video = await db.get_video(video_id)
+    await db.log_audit(callback.from_user.id, "Video tiklandi", video["title"] if video else str(video_id))
     await callback.answer("✅ Video va uning ovozlari tiklandi!", show_alert=True)
 
 
@@ -187,7 +191,9 @@ async def cb_delete_confirm(callback: CallbackQuery):
         await callback.answer()
         return
     video_id = int(callback.data.split(":")[1])
+    video = await db.get_video(video_id)
     await db.delete_video(video_id)
+    await db.log_audit(callback.from_user.id, "Video yashirildi", video["title"] if video else str(video_id))
     await callback.message.edit_text("🚫 Video yashirildi (ovozlari saqlanib qoldi, \"📋 Videolar\"dan tiklash mumkin).")
     await callback.answer()
 
@@ -344,6 +350,11 @@ async def voting_period_receive_end(message: Message, state: FSMContext):
 
     await db.set_voting_period(start_dt.isoformat(), end_dt.isoformat())
     await db.set_setting("reminder_sent_for", "")
+    await db.log_audit(
+        message.from_user.id,
+        "Ovoz berish muddati belgilandi",
+        f"{start_dt.strftime(DATE_FORMAT)} — {end_dt.strftime(DATE_FORMAT)}",
+    )
     await state.clear()
     await message.answer(
         "✅ Ovoz berish muddati belgilandi.\n\n"
@@ -351,6 +362,118 @@ async def voting_period_receive_end(message: Message, state: FSMContext):
         f"Tugash: <b>{end_dt.strftime(DATE_FORMAT)}</b>",
         reply_markup=kb.admin_menu_keyboard(is_super_admin(message.from_user.id)),
     )
+
+
+# ==================== OVOZ BERISHNI HOZIROQ YAKUNLASH (tezkor tugma) ====================
+
+@router.message(F.text == "🔒 Ovoz berishni hoziroq yakunlash")
+async def end_voting_now_start(message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    await message.answer(
+        "⚠️ Ovoz berishni HOZIR yakunlaysizmi?\n\n"
+        "Bundan keyin foydalanuvchilar ovoz bera olmaydi (\"🔒 Ovoz berish "
+        "muddati yakunlangan\" ko'radi), lekin \"🏆 Natijalar\"ni ko'rishda davom "
+        "etishlari mumkin.",
+        reply_markup=kb.end_voting_confirm_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "end_voting_confirm")
+async def cb_end_voting_confirm(callback: CallbackQuery):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    await db.end_voting_now()
+    await db.log_audit(callback.from_user.id, "Ovoz berish hoziroq yakunlandi", "")
+    await callback.message.edit_text(
+        "🔒 Ovoz berish yakunlandi.\n\n"
+        "Foydalanuvchilar endi ovoz bera olmaydi, faqat natijalarni ko'rishlari mumkin."
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "end_voting_cancel")
+async def cb_end_voting_cancel(callback: CallbackQuery):
+    await callback.message.edit_text("❌ Bekor qilindi, ovoz berish davom etmoqda.")
+    await callback.answer()
+
+
+# ==================== BOTNI OMMAVIY TO'XTATISH ====================
+
+@router.message(F.text == "🛑 Botni to'xtatish")
+async def lock_bot_start(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    if await db.is_bot_locked():
+        await message.answer("ℹ️ Bot allaqachon to'xtatilgan holatda.")
+        return
+    await state.set_state(LockBotStates.waiting_for_message)
+    await message.answer(
+        "🛑 Bot to'xtatilgach, oddiy foydalanuvchilar bot bilan hech qanday "
+        "amal bajara olmaydi (faqat siz belgilagan xabarni ko'radi). Siz "
+        "(admin) esa botdan to'liq foydalanishda davom etasiz.\n\n"
+        "Foydalanuvchilarga qanday xabar ko'rsatilsin?\n\n"
+        f"Standart xabar: \"{db.DEFAULT_LOCK_MESSAGE}\"\n\n"
+        "O'z xabaringizni yozing, yoki standart xabar uchun /skip yozing."
+    )
+
+
+@router.message(LockBotStates.waiting_for_message, Command("skip"))
+async def lock_bot_skip_message(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    await state.update_data(lock_message=db.DEFAULT_LOCK_MESSAGE)
+    await message.answer(
+        f"⚠️ Bu xabar bilan botni to'xtatasizmi?\n\n\"{db.DEFAULT_LOCK_MESSAGE}\"",
+        reply_markup=kb.lock_bot_confirm_keyboard(),
+    )
+
+
+@router.message(LockBotStates.waiting_for_message, F.text)
+async def lock_bot_receive_message(message: Message, state: FSMContext):
+    if not await is_admin(message.from_user.id):
+        return
+    await state.update_data(lock_message=message.text)
+    await message.answer(
+        f"⚠️ Bu xabar bilan botni to'xtatasizmi?\n\n\"{escape(message.text)}\"",
+        reply_markup=kb.lock_bot_confirm_keyboard(),
+    )
+
+
+@router.callback_query(F.data == "lock_bot_confirm")
+async def cb_lock_bot_confirm(callback: CallbackQuery, state: FSMContext):
+    if not await is_admin(callback.from_user.id):
+        await callback.answer()
+        return
+    data = await state.get_data()
+    lock_message = data.get("lock_message", db.DEFAULT_LOCK_MESSAGE)
+    await state.update_data(lock_message=None)
+    await db.lock_bot(lock_message)
+    await db.log_audit(callback.from_user.id, "Bot to'xtatildi", lock_message)
+    await callback.message.edit_text(
+        f"🛑 Bot to'xtatildi. Oddiy foydalanuvchilar endi shu xabarni ko'radi:\n\n\"{escape(lock_message)}\""
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "lock_bot_cancel")
+async def cb_lock_bot_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.update_data(lock_message=None)
+    await callback.message.edit_text("❌ Bekor qilindi, bot ishlashda davom etadi.")
+    await callback.answer()
+
+
+@router.message(F.text == "🟢 Botni qayta yoqish")
+async def unlock_bot_handler(message: Message):
+    if not await is_admin(message.from_user.id):
+        return
+    if not await db.is_bot_locked():
+        await message.answer("ℹ️ Bot hozir to'xtatilmagan, u allaqachon ishlab turibdi.")
+        return
+    await db.unlock_bot()
+    await db.log_audit(message.from_user.id, "Bot qayta yoqildi", "")
+    await message.answer("🟢 Bot qayta yoqildi — foydalanuvchilar yana to'liq foydalana oladi.")
 
 
 # ==================== ADMINLARNI BOSHQARISH (faqat asosiy admin) ====================
@@ -391,6 +514,7 @@ async def add_admin_receive_id(message: Message, state: FSMContext):
 
     added = await db.add_admin(new_admin_id, message.from_user.id)
     if added:
+        await db.log_audit(message.from_user.id, "Admin qo'shildi", str(new_admin_id))
         await message.answer(f"✅ <code>{new_admin_id}</code> admin sifatida qo'shildi.")
     else:
         await message.answer("⚠️ Bu foydalanuvchi allaqachon admin.")
@@ -403,6 +527,7 @@ async def cb_admin_remove(callback: CallbackQuery):
         return
     admin_id = int(callback.data.split(":")[1])
     await db.remove_admin(admin_id)
+    await db.log_audit(callback.from_user.id, "Admin o'chirildi", str(admin_id))
     await callback.message.edit_text(f"🗑 <code>{admin_id}</code> adminlikdan olindi.")
     await callback.answer()
 
@@ -455,6 +580,7 @@ async def cb_broadcast_send(callback: CallbackQuery, state: FSMContext):
     await callback.message.answer(
         f"✅ Yuborish yakunlandi.\n\n📤 Yuborildi: {sent}\n⚠️ Yetkazilmadi: {failed}"
     )
+    await db.log_audit(callback.from_user.id, "Broadcast yuborildi", f"{sent} ta yuborildi, {failed} ta xato")
     await callback.answer()
 
 
@@ -640,6 +766,12 @@ async def cb_adjust_confirm(callback: CallbackQuery, state: FSMContext):
         return
 
     await db.add_vote_adjustment(video_id, amount, callback.from_user.id, reason)
+    video_for_log = await db.get_video(video_id)
+    await db.log_audit(
+        callback.from_user.id,
+        "Ovoz tuzatildi",
+        f"{video_for_log['title']}: {'+' if amount > 0 else ''}{amount} ({reason})",
+    )
     await state.update_data(adjust_video_id=None, adjust_amount=None, adjust_reason=None)
 
     video = await db.get_video(video_id)
@@ -692,6 +824,7 @@ async def cb_cancel_adjustment(callback: CallbackQuery):
         return
     adjustment_id = int(callback.data.split(":")[1])
     await db.cancel_adjustment(adjustment_id, callback.from_user.id)
+    await db.log_audit(callback.from_user.id, "Ovoz tuzatishi bekor qilindi", f"ID {adjustment_id}")
     await callback.message.edit_text(
         callback.message.text + "\n\n🗑 BU TUZATISH BEKOR QILINDI.",
     )
