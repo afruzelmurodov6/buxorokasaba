@@ -8,7 +8,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 import config
 import database as db
-from handlers import admin, start, users, videos, voting
+from handlers import admin, antifraud, start, users, videos, voting
+from middleware import BotLockMiddleware
 from reminders import reminder_loop
 from webserver import start_webserver
 
@@ -26,19 +27,17 @@ async def main():
     )
     dp = Dispatcher(storage=MemoryStorage())
 
+    dp.message.outer_middleware(BotLockMiddleware())
+    dp.callback_query.outer_middleware(BotLockMiddleware())
+
     dp.include_router(start.router)
     dp.include_router(videos.router)
     dp.include_router(voting.router)
     dp.include_router(admin.router)
+    dp.include_router(antifraud.router)
     dp.include_router(users.router)
 
-    # Jadvallarni yaratadi (mavjud bo'lsa tegmaydi)
     await db.init_db()
-
-    # Baza chindan ham bo'sh bo'lsa (masalan yangi Volume birinchi marta
-    # ulanganda) — backup_data.json'dan eski foydalanuvchi/ovozlarni
-    # avtomatik tiklaydi. Bazada ma'lumot bo'lsa, hech narsa qilmaydi.
-    await db.restore_from_backup_if_empty()
 
     await start_webserver(config.PORT)
 

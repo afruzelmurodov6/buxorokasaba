@@ -30,6 +30,10 @@ class BroadcastStates(StatesGroup):
     waiting_for_message = State()
 
 
+class LockBotStates(StatesGroup):
+    waiting_for_message = State()
+
+
 class AdjustVotesStates(StatesGroup):
     waiting_for_amount = State()
     waiting_for_reason = State()

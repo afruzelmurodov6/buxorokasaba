@@ -85,6 +85,27 @@ async def init_db() -> None:
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                admin_id INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                details TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS final_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                confirmed_by INTEGER NOT NULL,
+                results_snapshot TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         await conn.commit()
 
         # Migratsiya: eski bazalarda ba'zi ustunlar yo'q bo'lishi mumkin.
@@ -191,17 +212,6 @@ async def merge_legacy_backup(backup_path: str = "backup_data.json") -> None:
         f"Eski zaxira (backup_data.json) qo'shildi: {added_users} ta yangi foydalanuvchi, "
         f"{added_votes} ta ovoz tiklandi."
     )
-
-
-async def restore_from_backup_if_empty(backup_path: str = "backup_data.json") -> None:
-    """
-    Compatibility wrapper for bot.py's startup call. Safe to call every time
-    the bot starts — it's idempotent (guarded internally by the
-    'legacy_backup_merged' settings flag), so it only actually restores data
-    once, the first time it finds backup_data.json and the users haven't
-    been merged in yet.
-    """
-    await merge_legacy_backup(backup_path)
 
 
 # ==================== USERS ====================
@@ -597,6 +607,20 @@ async def set_voting_period(start_iso: str, end_iso: str) -> None:
     await set_setting("voting_end_at", end_iso)
 
 
+async def end_voting_now() -> None:
+    """Admin uchun tezkor tugma: ovoz berishni AYNAN HOZIR yakunlaydi
+    (sana kiritish shart emas). Agar boshlanish sanasi hali belgilanmagan
+    bo'lsa, uni ham kechagi sana bilan avtomatik to'ldiradi."""
+    from datetime import timedelta
+
+    now = datetime.now()
+    start_iso, _ = await get_voting_period()
+    if not start_iso:
+        start_iso = (now - timedelta(days=1)).isoformat()
+    end_iso = (now - timedelta(seconds=1)).isoformat()
+    await set_voting_period(start_iso, end_iso)
+
+
 # ==================== OVOZ TUZATISHLARI (adolat uchun, to'liq shaffof) ====================
 # Texnik nosozlik sabab yo'qolgan ovozlarni qayta hisobga olish uchun.
 # Har bir tuzatish: kim, qachon, qancha, nima sababdan qo'shgani bilan saqlanadi.
@@ -656,3 +680,266 @@ async def cancel_adjustment(adjustment_id: int, cancelled_by: int) -> None:
             (datetime.now().isoformat(), cancelled_by, adjustment_id),
         )
         await conn.commit()
+
+
+# ==================== AUDIT LOG (barcha muhim admin harakatlari) ====================
+
+async def log_audit(admin_id: int, action: str, details: str = "") -> None:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO audit_log (admin_id, action, details, created_at) VALUES (?, ?, ?, ?)",
+            (admin_id, action, details, datetime.now().isoformat()),
+        )
+        await conn.commit()
+
+
+async def get_audit_log(limit: int = 30) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT ?", (limit,)
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+# ==================== ANTI-FRAUD: FAQAT ANIQLASH, HECH NARSA AVTOMATIK O'ZGARMAYDI ====================
+# MUHIM: bu funksiyalar faqat ADMIN uchun TEKSHIRUV SIGNALI beradi.
+# IP, telefon yoki boshqa mavjud bo'lmagan ma'lumot ishlatilmaydi — faqat
+# users/votes jadvalidagi haqiqiy vaqt belgilari va nomlar solishtiriladi.
+# Hech qanday ovoz yoki foydalanuvchi bu yerda avtomatik o'chirilmaydi yoki
+# "firibgar" deb belgilanmaydi — faqat ro'yxat ko'rsatiladi, qaror admin uchun.
+
+FAST_VOTE_THRESHOLD_SECONDS = 10  # ro'yxatdan o'tish -> ovoz berish orasi shundan tez bo'lsa, shubhali
+BURST_WINDOW_SECONDS = 30  # shu oyna ichida qancha akkaunt yaratilgani tekshiriladi
+BURST_MIN_ACCOUNTS = 5  # shu oyna ichida kamida shuncha akkaunt bo'lsa, "burst" deb belgilanadi
+
+
+async def get_fast_signup_to_vote() -> list[dict]:
+    """
+    Foydalanuvchi ro'yxatdan o'tishi bilan ovoz berishi orasida juda kam vaqt
+    o'tgan holatlar (masalan, 10 soniyadan kam) — bu odatiy foydalanuvchi
+    xatti-harakatiga o'xshamaydi (odam avval botni ko'rib chiqadi, keyin
+    ovoz beradi), ko'proq avtomatlashtirilgan/skript orqali qilingan
+    harakatlarga xos.
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            """
+            SELECT u.telegram_id, u.username, u.first_name, u.last_name,
+                   u.created_at AS user_created_at, vo.created_at AS vote_created_at,
+                   v.title AS voted_title
+            FROM users u
+            JOIN votes vo ON vo.user_id = u.id
+            JOIN videos v ON v.id = vo.video_id
+            """
+        )
+        rows = await cursor.fetchall()
+
+    flagged = []
+    for row in rows:
+        d = dict(row)
+        try:
+            user_created = datetime.fromisoformat(d["user_created_at"])
+            voted_at = datetime.fromisoformat(d["vote_created_at"])
+            delta = (voted_at - user_created).total_seconds()
+        except (ValueError, TypeError):
+            continue
+        if 0 <= delta < FAST_VOTE_THRESHOLD_SECONDS:
+            d["seconds_to_vote"] = round(delta, 1)
+            flagged.append(d)
+
+    flagged.sort(key=lambda x: x["seconds_to_vote"])
+    return flagged
+
+
+async def get_duplicate_name_clusters() -> list[dict]:
+    """
+    Bir xil (ism, familiya) juftligiga ega, lekin turli Telegram ID'lariga
+    ega bo'lgan foydalanuvchilar guruhlari — soxta/nusxa akkauntlar
+    yaratishning keng tarqalgan belgisi.
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            """
+            SELECT
+                COALESCE(first_name, '') AS first_name,
+                COALESCE(last_name, '') AS last_name,
+                COUNT(*) AS cnt
+            FROM users
+            WHERE first_name IS NOT NULL AND first_name != ''
+            GROUP BY COALESCE(first_name, ''), COALESCE(last_name, '')
+            HAVING COUNT(*) >= 2
+            ORDER BY cnt DESC
+            """
+        )
+        clusters = [dict(row) for row in await cursor.fetchall()]
+
+        result = []
+        for cluster in clusters:
+            cursor = await conn.execute(
+                """
+                SELECT u.telegram_id, u.username, u.created_at, v.title AS voted_title
+                FROM users u
+                LEFT JOIN votes vo ON vo.user_id = u.id
+                LEFT JOIN videos v ON v.id = vo.video_id
+                WHERE COALESCE(u.first_name, '') = ? AND COALESCE(u.last_name, '') = ?
+                ORDER BY u.created_at ASC
+                """,
+                (cluster["first_name"], cluster["last_name"]),
+            )
+            members = [dict(row) for row in await cursor.fetchall()]
+            result.append({
+                "first_name": cluster["first_name"],
+                "last_name": cluster["last_name"],
+                "count": cluster["cnt"],
+                "members": members,
+            })
+
+    return result
+
+
+async def get_signup_burst_clusters() -> list[dict]:
+    """
+    Qisqa vaqt oynasi ichida (masalan 30 soniyada) ro'yxatdan o'tgan va
+    HAMMASI bitta ishtirokchiga ovoz bergan akkauntlar guruhini topadi —
+    bu ommaviy/skript orqali yaratilgan akkauntlarga xos naqsh.
+    """
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            """
+            SELECT u.telegram_id, u.username, u.first_name, u.last_name,
+                   u.created_at, v.title AS voted_title
+            FROM users u
+            JOIN votes vo ON vo.user_id = u.id
+            JOIN videos v ON v.id = vo.video_id
+            ORDER BY u.created_at ASC
+            """
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+
+    clusters = []
+    i = 0
+    n = len(rows)
+    while i < n:
+        window_start = datetime.fromisoformat(rows[i]["created_at"])
+        j = i
+        window = []
+        while j < n:
+            t = datetime.fromisoformat(rows[j]["created_at"])
+            if (t - window_start).total_seconds() <= BURST_WINDOW_SECONDS:
+                window.append(rows[j])
+                j += 1
+            else:
+                break
+
+        if len(window) >= BURST_MIN_ACCOUNTS:
+            titles_in_window = {r["voted_title"] for r in window}
+            if len(titles_in_window) == 1:
+                clusters.append({
+                    "video_title": window[0]["voted_title"],
+                    "count": len(window),
+                    "window_start": window[0]["created_at"],
+                    "window_end": window[-1]["created_at"],
+                    "members": window,
+                })
+                i = j
+            else:
+                # Aralash unvonli katta oyna — haqiqiy klaster shu oynaning
+                # ichida kichikroq joyda bo'lishi mumkin, shuning uchun faqat
+                # 1 qadam siljib, qaytadan tekshiramiz (j ga sakramaymiz).
+                i += 1
+        else:
+            i += 1
+
+    return clusters
+
+
+async def get_fraud_stats() -> dict:
+    fast_votes = await get_fast_signup_to_vote()
+    duplicate_clusters = await get_duplicate_name_clusters()
+    burst_clusters = await get_signup_burst_clusters()
+
+    duplicate_user_count = sum(c["count"] for c in duplicate_clusters)
+    burst_user_count = sum(c["count"] for c in burst_clusters)
+
+    total_votes = await db_total_votes()
+
+    return {
+        "total_votes": total_votes,
+        "fast_signup_votes": len(fast_votes),
+        "duplicate_name_clusters": len(duplicate_clusters),
+        "duplicate_name_users": duplicate_user_count,
+        "burst_clusters": len(burst_clusters),
+        "burst_users": burst_user_count,
+    }
+
+
+async def db_total_votes() -> int:
+    async with aiosqlite.connect(DB_PATH) as conn:
+        cursor = await conn.execute("SELECT COUNT(*) FROM votes")
+        return (await cursor.fetchone())[0]
+
+
+# ==================== YAKUNIY NATIJANI TASDIQLASH ====================
+
+async def confirm_final_results(admin_id: int) -> dict:
+    """Joriy natijalarning o'zgarmas 'suratini' (snapshot) saqlaydi va
+    tasdiqlangan sana/admin bilan birga yozib qo'yadi. Bu — rasmiy yakuniy
+    natija sifatida keyinchalik ko'rsatiladi."""
+    results = await get_results()
+    snapshot = [
+        {"title": v["title"], "votes_count": v["votes_count"], "position": v["position"]}
+        for v in results
+    ]
+    snapshot_json = json.dumps(snapshot, ensure_ascii=False)
+
+    async with aiosqlite.connect(DB_PATH) as conn:
+        await conn.execute(
+            "INSERT INTO final_results (confirmed_by, results_snapshot, created_at) "
+            "VALUES (?, ?, ?)",
+            (admin_id, snapshot_json, datetime.now().isoformat()),
+        )
+        await conn.commit()
+
+    return {"confirmed_by": admin_id, "results": snapshot}
+
+
+async def get_final_results_confirmation() -> Optional[dict]:
+    """Eng oxirgi tasdiqlangan yakuniy natijani qaytaradi (agar mavjud bo'lsa)."""
+    async with aiosqlite.connect(DB_PATH) as conn:
+        conn.row_factory = aiosqlite.Row
+        cursor = await conn.execute(
+            "SELECT * FROM final_results ORDER BY created_at DESC LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        d["results"] = json.loads(d["results_snapshot"])
+        return d
+
+
+# ==================== BOTNI OMMAVIY TO'XTATISH (faqat admin uchun ochiq qoladi) ====================
+
+DEFAULT_LOCK_MESSAGE = "🔒 Ovoz berish yakunlandi. Ishtirok etganingiz uchun rahmat!"
+
+
+async def is_bot_locked() -> bool:
+    return (await get_setting("bot_locked")) == "1"
+
+
+async def get_lock_message() -> str:
+    return await get_setting("bot_locked_message") or DEFAULT_LOCK_MESSAGE
+
+
+async def lock_bot(message: str) -> None:
+    await set_setting("bot_locked", "1")
+    await set_setting("bot_locked_message", message)
+
+
+async def unlock_bot() -> None:
+    await set_setting("bot_locked", "0")

@@ -45,8 +45,11 @@ def admin_menu_keyboard(is_super_admin: bool = False) -> ReplyKeyboardMarkup:
         [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="🏆 Natijalar")],
         [KeyboardButton(text="✏️ Video tahrirlash"), KeyboardButton(text="🗑 Video o'chirish")],
         [KeyboardButton(text="📅 Sana belgilash"), KeyboardButton(text="📢 Xabar yuborish")],
+        [KeyboardButton(text="🔒 Ovoz berishni hoziroq yakunlash")],
+        [KeyboardButton(text="🛑 Botni to'xtatish"), KeyboardButton(text="🟢 Botni qayta yoqish")],
         [KeyboardButton(text="📤 Excel eksport")],
         [KeyboardButton(text="⚖️ Ovoz tuzatish"), KeyboardButton(text="📜 Tuzatishlar tarixi")],
+        [KeyboardButton(text="🛡 Anti-Fraud / Audit")],
     ]
     if is_super_admin:
         keyboard.append([KeyboardButton(text="👤 Adminlar"), KeyboardButton(text="➕ Admin qo'shish")])
@@ -103,6 +106,52 @@ def restore_video_keyboard(video_id: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text="♻️ Tiklash", callback_data=f"restore_video:{video_id}")]
+        ]
+    )
+
+
+def end_voting_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, yakunlash", callback_data="end_voting_confirm"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data="end_voting_cancel"),
+            ]
+        ]
+    )
+
+
+def lock_bot_confirm_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, to'xtatish", callback_data="lock_bot_confirm"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data="lock_bot_cancel"),
+            ]
+        ]
+    )
+
+
+def antifraud_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔎 Faollik auditi"), KeyboardButton(text="🚨 Shubhali ovozlar")],
+            [KeyboardButton(text="📊 Fraud statistikasi"), KeyboardButton(text="📜 Audit log")],
+            [KeyboardButton(text="🔒 Ovoz berishni hoziroq yakunlash")],
+            [KeyboardButton(text="🏆 Yakuniy natijani tasdiqlash"), KeyboardButton(text="📄 Yakuniy hisobot")],
+            [KeyboardButton(text="⬅️ Admin panelga qaytish")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def confirm_final_results_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Ha, tasdiqlayman", callback_data="confirm_final_yes"),
+                InlineKeyboardButton(text="❌ Yo'q", callback_data="confirm_final_no"),
+            ]
         ]
     )
 
