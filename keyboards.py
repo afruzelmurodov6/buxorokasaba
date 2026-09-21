@@ -137,6 +137,7 @@ def antifraud_menu_keyboard() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text="🔎 Faollik auditi"), KeyboardButton(text="🚨 Shubhali ovozlar")],
             [KeyboardButton(text="📊 Fraud statistikasi"), KeyboardButton(text="📜 Audit log")],
+            [KeyboardButton(text="📤 Fraud eksport (to'liq)")],
             [KeyboardButton(text="🔒 Ovoz berishni hoziroq yakunlash")],
             [KeyboardButton(text="🏆 Yakuniy natijani tasdiqlash"), KeyboardButton(text="📄 Yakuniy hisobot")],
             [KeyboardButton(text="⬅️ Admin panelga qaytish")],
